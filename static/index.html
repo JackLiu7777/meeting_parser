@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<title>腾讯会议报告解析</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: sans-serif; background: #f5f5f5; padding: 20px; }
+  h1 { font-size: 20px; margin-bottom: 16px; }
+  .toolbar { display: flex; align-items: center; gap: 12px; margin-bottom: 16px; }
+  .tabs { display: flex; gap: 0; margin-bottom: 0; }
+  .tab {
+    padding: 8px 20px; cursor: pointer; border: 1px solid #ccc;
+    background: #fff; border-bottom: none; border-radius: 4px 4px 0 0;
+    color: #555; font-size: 14px;
+  }
+  .tab.active { background: #1677ff; color: #fff; border-color: #1677ff; }
+  .tab.done::after { content: " ✓"; }
+  .box {
+    background: #fff; border: 1px solid #ccc; border-radius: 0 4px 4px 4px;
+    padding: 16px; min-height: 400px; position: relative;
+  }
+  textarea {
+    width: 100%; height: 420px; border: none; outline: none;
+    font-family: "仿宋", FangSong, monospace; font-size: 14px;
+    resize: vertical; line-height: 1.8;
+  }
+  .actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 12px; }
+  button {
+    padding: 6px 18px; border: 1px solid #1677ff; border-radius: 4px;
+    background: #fff; color: #1677ff; cursor: pointer; font-size: 14px;
+  }
+  button:hover { background: #e6f0ff; }
+  button:disabled { opacity: 0.4; cursor: not-allowed; }
+  button.primary { background: #1677ff; color: #fff; }
+  button.primary:hover { background: #0958d9; }
+  #status { font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+<h1>腾讯会议报告解析</h1>
+
+<div class="toolbar">
+  <input type="file" id="fileInput" accept=".txt,.docx">
+  <button class="primary" id="genBtn" onclick="startGenerate()" disabled>开始生成</button>
+  <span id="status">请选择逐字稿 TXT 文件</span>
+</div>
+
+<div class="tabs">
+  <div class="tab active" id="tab0" onclick="switchTab(0)">合规计划书</div>
+  <div class="tab" id="tab1" onclick="switchTab(1)">文书清单</div>
+</div>
+<div class="box">
+  <textarea id="content" readonly placeholder="生成内容将在此处实时显示…"></textarea>
+  <div class="actions">
+    <button id="copyBtn" onclick="copyText()" disabled>复制文本</button>
+    <button id="dlBtn" onclick="downloadDocx()" disabled>下载 Word</button>
+  </div>
+</div>
+
+<script>
+let sessionId = null;
+let activeTab = 0;
+const docs = ['', ''];
+
+const fileInput = document.getElementById('fileInput');
+const genBtn    = document.getElementById('genBtn');
+const status    = document.getElementById('status');
+const content   = document.getElementById('content');
+const copyBtn   = document.getElementById('copyBtn');
+const dlBtn     = document.getElementById('dlBtn');
+
+fileInput.onchange = () => {
+  genBtn.disabled = !fileInput.files.length;
+  status.textContent = fileInput.files[0]?.name || '';
+};
+
+function switchTab(i) {
+  activeTab = i;
+  document.querySelectorAll('.tab').forEach((t, j) => t.classList.toggle('active', i === j));
+  content.value = docs[i];
+  content.scrollTop = content.scrollHeight;
+}
+
+async function startGenerate() {
+  genBtn.disabled = true;
+  copyBtn.disabled = true;
+  dlBtn.disabled = true;
+  docs.fill('');
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('done'));
+
+  // 1. 上传文件
+  const form = new FormData();
+  form.append('file', fileInput.files[0]);
+  status.textContent = '上传中…';
+  let res;
+  try {
+    res = await fetch('/api/upload', { method: 'POST', body: form });
+    if (!res.ok) throw new Error(await res.text());
+  } catch(e) {
+    status.textContent = '上传失败: ' + e.message;
+    genBtn.disabled = false;
+    return;
+  }
+  ({ session_id: sessionId } = await res.json());
+
+  // 2. 流式生成
+  status.textContent = '生成中…';
+  const resp = await fetch('/api/generate/stream', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sessionId }),
+  });
+
+  const reader  = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buffer += decoder.decode(value, { stream: true });
+    const parts = buffer.split('\n\n');
+    buffer = parts.pop();
+    for (const part of parts) handleSSE(part);
+  }
+}
+
+function handleSSE(part) {
+  const eLine = part.split('\n').find(l => l.startsWith('event:'));
+  const dLine = part.split('\n').find(l => l.startsWith('data:'));
+  if (!eLine || !dLine) return;
+  const event = eLine.slice(6).trim();
+  const data  = JSON.parse(dLine.slice(5).trim());
+
+  if (event === 'progress') {
+    status.textContent = data.message;
+  } else if (event === 'doc1_chunk') {
+    docs[0] += data.text;
+    if (activeTab === 0) { content.value = docs[0]; content.scrollTop = content.scrollHeight; }
+  } else if (event === 'doc2_chunk') {
+    docs[1] += data.text;
+    if (activeTab === 1) { content.value = docs[1]; content.scrollTop = content.scrollHeight; }
+  } else if (event === 'doc1_done') {
+    document.getElementById('tab0').classList.add('done');
+  } else if (event === 'doc2_done') {
+    document.getElementById('tab1').classList.add('done');
+  } else if (event === 'done') {
+    docs[0] = data.doc1; docs[1] = data.doc2;
+    content.value = docs[activeTab];
+    status.textContent = '生成完成';
+    genBtn.disabled = false;
+    copyBtn.disabled = false;
+    dlBtn.disabled = false;
+  }
+}
+
+function copyText() {
+  navigator.clipboard.writeText(docs[activeTab])
+    .then(() => { status.textContent = '已复制到剪贴板'; })
+    .catch(() => { status.textContent = '复制失败，请手动选中复制'; });
+}
+
+function downloadDocx() {
+  if (!sessionId) return;
+  window.location.href = `/api/download/${sessionId}/${activeTab + 1}`;
+}
+</script>
+</body>
+</html>
