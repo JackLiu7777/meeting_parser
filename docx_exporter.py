@@ -9,7 +9,6 @@ from docx.oxml import OxmlElement
 from docx.oxml.ns import qn
 from docx.shared import Pt
 
-from db_client import db_client
 from document_selection import (
     DOCUMENT_CATEGORY_BY_TITLE,
     DOCUMENT_OVERVIEW_GROUPS,
@@ -311,7 +310,7 @@ def _add_document_list_overview_table(
             elif document_counts:
                 template_count = 1
             else:
-                template_count = 1 if document_title == "规章制度" else db_client.count_document_templates(document_name)
+                template_count = 1
             total_count += template_count
             while len(normalized_row) < 3:
                 normalized_row.append("")

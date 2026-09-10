@@ -1,11 +1,6 @@
-import httpx
-import logging
 from io import BytesIO
-from urllib.parse import unquote, urlparse
 
 from docx import Document
-
-logger = logging.getLogger(__name__)
 
 
 def _decode_text_content(content: bytes) -> str:
@@ -28,10 +23,10 @@ def _extract_docx_content(content: bytes) -> str:
 
 
 def _guess_file_ext(filename_or_url: str, content_type: str = "") -> str:
-    path = unquote(urlparse(filename_or_url).path).lower()
-    if path.endswith(".docx"):
+    lower = filename_or_url.lower()
+    if lower.endswith(".docx"):
         return ".docx"
-    if path.endswith(".txt"):
+    if lower.endswith(".txt"):
         return ".txt"
     if "wordprocessingml.document" in content_type:
         return ".docx"
@@ -41,45 +36,10 @@ def _guess_file_ext(filename_or_url: str, content_type: str = "") -> str:
 
 
 def extract_meeting_content(content: bytes, filename_or_url: str = "", content_type: str = "") -> str:
+    """从上传的字节内容中提取会议纪要纯文本，支持 .txt 和 .docx。"""
     ext = _guess_file_ext(filename_or_url, content_type)
     if ext == ".docx":
         return _extract_docx_content(content)
     if ext in ("", ".txt"):
         return _decode_text_content(content)
-    raise ValueError("仅支持 .txt 和 .docx 格式的腾讯会议纪要")
-
-
-async def download_file(url: str, timeout: int = 30) -> str:
-    """
-    从URL下载文件内容
-
-    Args:
-        url: 文件URL
-        timeout: 超时时间（秒）
-
-    Returns:
-        文件内容（文本）
-
-    Raises:
-        httpx.HTTPError: 下载失败
-    """
-    try:
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            response = await client.get(url)
-            response.raise_for_status()
-
-            content = extract_meeting_content(
-                response.content,
-                url,
-                response.headers.get("content-type", ""),
-            )
-
-            logger.info(f"文件下载成功: {url} ({len(content)} 字符)")
-            return content
-
-    except httpx.HTTPError as e:
-        logger.error(f"文件下载失败: {url} - {e}")
-        raise
-    except Exception as e:
-        logger.error(f"下载过程出错: {e}")
-        raise
+    raise ValueError("仅支持 .txt 和 .docx 格式的会议纪要")
